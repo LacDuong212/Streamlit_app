@@ -1,5 +1,6 @@
 import io
 from typing import Any
+from av import VideoFrame
 
 import cv2
 import streamlit as st
@@ -138,9 +139,15 @@ class Inference:
                 # Perform object detection on the frame
                 results = self.model(img, conf=self.conf, iou=self.iou, classes=self.selected_ind)
                 annotated_frame = results[0].plot()  # Add annotations on frame
-                return annotated_frame
+                new_frame = VideoFrame.from_ndarray(annotated_frame, format="bgr24")
+                
+                return new_frame
 
-            webrtc_streamer(key="example", video_frame_callback=video_frame_callback)
+            webrtc_streamer(
+                key="example",
+                video_frame_callback=video_frame_callback,
+                media_stream_constraints={"video": True, "audio": False},
+            )
 
 
 if __name__ == "__main__":
