@@ -1,50 +1,25 @@
-# Ultralytics 🚀 AGPL-3.0 License - https://ultralytics.com/license
-
 import io
 from typing import Any
+
 import cv2
-import numpy as np
-from PIL import Image
+from streamlit_webrtc import webrtc_streamer, VideoTransformerBase
+import av  # PyAV dùng bởi webrtc-streamer
+from ultralytics import YOLO
 from ultralytics.utils import LOGGER
 from ultralytics.utils.checks import check_requirements
 from ultralytics.utils.downloads import GITHUB_ASSETS_STEMS
-import os
-os.environ['CUDA_VISIBLE_DEVICES'] = '-1'
 
-# Streamlit and WebRTC imports at module level
-import streamlit as st
-from streamlit_webrtc import VideoProcessorBase, webrtc_streamer
-
-# Patch Streamlit's file watcher to avoid PyTorch module path extraction issue
-import streamlit.watcher.local_sources_watcher
-from streamlit.watcher.local_sources_watcher import extract_paths
-
-def patched_extract_paths(module):
-    try:
-        return extract_paths(module)
-    except Exception:
-        return []
-
-streamlit.watcher.local_sources_watcher.extract_paths = patched_extract_paths
 
 class Inference:
-    """
-    A class to perform object detection, image classification, image segmentation, and pose estimation inference.
-
-    This class provides functionalities for loading models, configuring settings, uploading video files, and performing
-    real-time inference using Streamlit, streamlit_webrtc, and Ultralytics YOLO models.
-    """
 
     def __init__(self, **kwargs: Any):
         """
-        Initialize the Inference class, checking requirements and setting up the model path.
-
-        Args:
-            **kwargs (Any): Additional keyword arguments for model configuration.
+        Initialize the Inference class, checking Streamlit requirements and setting up the model path.
         """
-        check_requirements(["streamlit>=1.29.0", "streamlit-webrtc>=0.47.7"])
+        check_requirements("streamlit>=1.29.0")
+        import streamlit as st
+
         self.st = st
-        self.webrtc_streamer = webrtc_streamer
         self.source = None
         self.enable_trk = False
         self.conf = 0.25
@@ -56,7 +31,10 @@ class Inference:
         self.model = None
 
         self.temp_dict = {"model": None, **kwargs}
-        self.model_path = self.temp_dict.get("model")
+        self.model_path = None
+        if self.temp_dict["model"] is not None:
+            self.model_path = self.temp_dict["model"]
+
         LOGGER.info(f"Ultralytics Solutions: ✅ {self.temp_dict}")
 
     def web_ui(self):
@@ -91,7 +69,7 @@ class Inference:
 
     def source_upload(self):
         """Handle video file uploads through the Streamlit interface."""
-        self.vid_file_name = None
+        self.vid_file_name = ""
         if self.source == "video":
             vid_file = self.st.sidebar.file_uploader("Upload Video File", type=["mp4", "mov", "avi", "mkv"])
             if vid_file is not None:
@@ -99,13 +77,15 @@ class Inference:
                 with open("ultralytics.mp4", "wb") as out:
                     out.write(g.read())
                 self.vid_file_name = "ultralytics.mp4"
+        elif self.source == "webcam":
+            self.vid_file_name = 0
 
     def configure(self):
         """Configure the model and load selected classes for inference."""
-        from ultralytics import YOLO  # Lazy import to avoid early PyTorch issues
         available_models = [x.replace("yolo", "YOLO") for x in GITHUB_ASSETS_STEMS if x.startswith("yolo11")]
         if self.model_path:
             available_models.insert(0, self.model_path.split(".pt")[0])
+
         selected_model = self.st.sidebar.selectbox("Model", available_models)
 
         with self.st.spinner("Model is downloading..."):
@@ -115,11 +95,11 @@ class Inference:
 
         selected_classes = self.st.sidebar.multiselect("Classes", class_names, default=class_names[:3])
         self.selected_ind = [class_names.index(option) for option in selected_classes]
+
         if not isinstance(self.selected_ind, list):
             self.selected_ind = list(self.selected_ind)
 
-    class VideoProcessor(VideoProcessorBase):
-        """A class to process video frames for streamlit_webrtc."""
+    class YOLOVideoTransformer(VideoTransformerBase):
         def __init__(self, model, enable_trk, conf, iou, selected_ind):
             self.model = model
             self.enable_trk = enable_trk
@@ -127,83 +107,38 @@ class Inference:
             self.iou = iou
             self.selected_ind = selected_ind
 
-        def recv(self, frame):
-            """Process incoming webcam frames."""
-            img = frame.to_ndarray(format="bgr24")  # Convert WebRTC frame to BGR
-
-            # Perform inference
+        def transform(self, frame):
+            img = frame.to_ndarray(format="bgr24")
             if self.enable_trk == "Yes":
-                results = self.model.track(
-                    img, conf=self.conf, iou=self.iou, classes=self.selected_ind, persist=True
-                )
+                results = self.model.track(img, conf=self.conf, iou=self.iou, classes=self.selected_ind, persist=True)
             else:
                 results = self.model(img, conf=self.conf, iou=self.iou, classes=self.selected_ind)
-
-            annotated_frame = results[0].plot()  # Add annotations
-            return annotated_frame
+            annotated_img = results[0].plot()
+            return annotated_img
 
     def inference(self):
-        """Perform real-time object detection inference on video or webcam feed."""
+        """Main inference runner."""
         self.web_ui()
         self.sidebar()
         self.source_upload()
         self.configure()
 
-        if self.st.sidebar.button("Start"):
-            stop_button = self.st.button("Stop")
-
-            if self.source == "video" and self.vid_file_name:
-                cap = cv2.VideoCapture(self.vid_file_name)
-                if not cap.isOpened():
-                    self.st.error("Could not open video file.")
-                    return
-
-                while cap.isOpened():
-                    success, frame = cap.read()
-                    if not success:
-                        self.st.warning("Failed to read frame from video.")
-                        break
-
-                    if self.enable_trk == "Yes":
-                        results = self.model.track(
-                            frame, conf=self.conf, iou=self.iou, classes=self.selected_ind, persist=True
-                        )
-                    else:
-                        results = self.model(frame, conf=self.conf, iou=self.iou, classes=self.selected_ind)
-
-                    annotated_frame = results[0].plot()
-
-                    if stop_button:
-                        cap.release()
-                        self.st.stop()
-
-                    self.org_frame.image(frame, channels="BGR")
-                    self.ann_frame.image(annotated_frame, channels="BGR")
-
-                cap.release()
-
-            elif self.source == "webcam":
-                ctx = self.webrtc_streamer(
-                    key="webcam",
-                    video_processor_factory=lambda: self.VideoProcessor(
-                        self.model, self.enable_trk, self.conf, self.iou, self.selected_ind
-                    ),
-                    rtc_configuration={"iceServers": [{"urls": ["stun:stun.l.google.com:19302"]}]},
-                    media_stream_constraints={"video": True, "audio": False},
-                )
-
-                if ctx.video_processor:
-                    self.org_frame.image(np.zeros((480, 640, 3), dtype=np.uint8), channels="BGR")
-                    self.ann_frame.image(np.zeros((480, 640, 3), dtype=np.uint8), channels="BGR")
-
-                if stop_button:
-                    self.st.stop()
-
-        cv2.destroyAllWindows()
+        if self.source == "webcam":
+            webrtc_streamer(
+                key="yolo",
+                video_transformer_factory=lambda: self.YOLOVideoTransformer(
+                    self.model, self.enable_trk, self.conf, self.iou, self.selected_ind
+                ),
+                media_stream_constraints={"video": True, "audio": False},
+                async_processing=True,
+            )
+        elif self.source == "video":
+            self.st.warning("Video file processing chưa được hỗ trợ với WebRTC.")
 
 
 if __name__ == "__main__":
     import sys
+
     args = len(sys.argv)
     model = sys.argv[1] if args > 1 else None
     Inference(model=model).inference()
