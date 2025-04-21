@@ -1,10 +1,11 @@
-streamlit
 torch
 torchvision
 ultralytics
 opencv-python-headless
-streamlit-webrtc
+streamlit>=1.29.0
+streamlit-webrtc==0.47.7
 numpy
 pandas
 matplotlib
 pillow
+pyav
