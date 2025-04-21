@@ -3,6 +3,7 @@ torch
 torchvision
 ultralytics
 opencv-python
+streamlit-webrtc
 numpy
 pandas
 matplotlib
