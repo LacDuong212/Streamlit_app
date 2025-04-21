@@ -2,18 +2,30 @@
 
 import io
 from typing import Any
-
 import cv2
 import numpy as np
 from PIL import Image
-
-from ultralytics import YOLO
 from ultralytics.utils import LOGGER
 from ultralytics.utils.checks import check_requirements
 from ultralytics.utils.downloads import GITHUB_ASSETS_STEMS
-
 import os
 os.environ['CUDA_VISIBLE_DEVICES'] = '-1'
+
+# Streamlit and WebRTC imports at module level
+import streamlit as st
+from streamlit_webrtc import VideoProcessorBase, webrtc_streamer
+
+# Patch Streamlit's file watcher to avoid PyTorch module path extraction issue
+import streamlit.watcher.local_sources_watcher
+from streamlit.watcher.local_sources_watcher import extract_paths
+
+def patched_extract_paths(module):
+    try:
+        return extract_paths(module)
+    except Exception:
+        return []
+
+streamlit.watcher.local_sources_watcher.extract_paths = patched_extract_paths
 
 class Inference:
     """
@@ -21,20 +33,6 @@ class Inference:
 
     This class provides functionalities for loading models, configuring settings, uploading video files, and performing
     real-time inference using Streamlit, streamlit_webrtc, and Ultralytics YOLO models.
-
-    Attributes:
-        st (module): Streamlit module for UI creation.
-        temp_dict (dict): Temporary dictionary to store the model path and other configuration.
-        model_path (str): Path to the loaded model.
-        model (YOLO): The YOLO model instance.
-        source (str): Selected video source (webcam or video).
-        enable_trk (str): Enable tracking option ("Yes" or "No").
-        conf (float): Confidence threshold for detection.
-        iou (float): IoU threshold for non-maximum suppression.
-        org_frame (Any): Container for the original frame to be displayed.
-        ann_frame (Any): Container for the annotated frame to be displayed.
-        vid_file_name (str | int): Name of the uploaded video file or None for webcam.
-        selected_ind (List[int]): List of selected class indices for detection.
     """
 
     def __init__(self, **kwargs: Any):
@@ -44,12 +42,9 @@ class Inference:
         Args:
             **kwargs (Any): Additional keyword arguments for model configuration.
         """
-        check_requirements(["streamlit>=1.29.0", "streamlit-webrtc>=0.47.7"])  # Include streamlit-webrtc
-        import streamlit as st
-        from streamlit_webrtc import VideoProcessorBase, webrtc_streamer
-
+        check_requirements(["streamlit>=1.29.0", "streamlit-webrtc>=0.47.7"])
         self.st = st
-        self.webrtc_streamer = webrtc_streamer  # Reference to streamlit_webrtc
+        self.webrtc_streamer = webrtc_streamer
         self.source = None
         self.enable_trk = False
         self.conf = 0.25
@@ -61,10 +56,7 @@ class Inference:
         self.model = None
 
         self.temp_dict = {"model": None, **kwargs}
-        self.model_path = None
-        if self.temp_dict["model"] is not None:
-            self.model_path = self.temp_dict["model"]
-
+        self.model_path = self.temp_dict.get("model")
         LOGGER.info(f"Ultralytics Solutions: ✅ {self.temp_dict}")
 
     def web_ui(self):
@@ -107,10 +99,10 @@ class Inference:
                 with open("ultralytics.mp4", "wb") as out:
                     out.write(g.read())
                 self.vid_file_name = "ultralytics.mp4"
-        # For webcam, vid_file_name remains None to indicate streamlit_webrtc usage
 
     def configure(self):
         """Configure the model and load selected classes for inference."""
+        from ultralytics import YOLO  # Lazy import to avoid early PyTorch issues
         available_models = [x.replace("yolo", "YOLO") for x in GITHUB_ASSETS_STEMS if x.startswith("yolo11")]
         if self.model_path:
             available_models.insert(0, self.model_path.split(".pt")[0])
@@ -123,7 +115,6 @@ class Inference:
 
         selected_classes = self.st.sidebar.multiselect("Classes", class_names, default=class_names[:3])
         self.selected_ind = [class_names.index(option) for option in selected_classes]
-
         if not isinstance(self.selected_ind, list):
             self.selected_ind = list(self.selected_ind)
 
@@ -173,7 +164,6 @@ class Inference:
                         self.st.warning("Failed to read frame from video.")
                         break
 
-                    # Process frame with model
                     if self.enable_trk == "Yes":
                         results = self.model.track(
                             frame, conf=self.conf, iou=self.iou, classes=self.selected_ind, persist=True
@@ -193,7 +183,6 @@ class Inference:
                 cap.release()
 
             elif self.source == "webcam":
-                # Use streamlit_webrtc for webcam
                 ctx = self.webrtc_streamer(
                     key="webcam",
                     video_processor_factory=lambda: self.VideoProcessor(
@@ -204,9 +193,8 @@ class Inference:
                 )
 
                 if ctx.video_processor:
-                    # Display frames from WebRTC
-                    self.org_frame.image(np.zeros((480, 640, 3), dtype=np.uint8), channels="BGR")  # Placeholder
-                    self.ann_frame.image(np.zeros((480, 640, 3), dtype=np.uint8), channels="BGR")  # Placeholder
+                    self.org_frame.image(np.zeros((480, 640, 3), dtype=np.uint8), channels="BGR")
+                    self.ann_frame.image(np.zeros((480, 640, 3), dtype=np.uint8), channels="BGR")
 
                 if stop_button:
                     self.st.stop()
@@ -216,7 +204,6 @@ class Inference:
 
 if __name__ == "__main__":
     import sys
-
     args = len(sys.argv)
     model = sys.argv[1] if args > 1 else None
     Inference(model=model).inference()
